@@ -58,7 +58,7 @@ class NotificationConfig:
 @dataclass
 class JobInfo:
     """Information about a submitted job."""
-    job_id: str
+    job_id: int
     job_name: str
     bash_command: str
     status: Optional[str] = None
@@ -420,7 +420,7 @@ class SlurmJobService:
             self.logger.error(f"Failed to get properties for job {job_id}: {str(e)}")
             raise
 
-    def get_job_status_from_slurmdb(self, job_id: str) -> SlurmJobStatus:
+    def get_job_status_from_slurmdb(self, job_id: int) -> SlurmJobStatus:
         """
         Get detailed job properties from SLURM database.
 
@@ -438,6 +438,28 @@ class SlurmJobService:
         except Exception as e:
             self.logger.error(f"Failed to get properties for job {job_id}: {str(e)}")
             raise
+
+    def get_job_status_and_id_by_name(self, job_name: str) -> Optional[tuple[int, str]] | None:
+        """
+        Get job status by job name.
+
+        Args:
+            job_name: Job name
+
+        Returns:
+            Job status if found, otherwise None
+        """
+        try:
+            jobs = self.client.get_all_job_properties(all_users=False)
+            for job in jobs:
+                if job.name == job_name:
+                    return job.job_id , self.get_job_status(job.job_id)  # Log current status
+            self.logger.warning(f"No job found with name: {job_name}")
+            return None
+        except Exception as e:
+            self.logger.error(f"Failed to get job status by name {job_name}: {str(e)}")
+            raise AirflowException(f"Failed to get job status by name: {str(e)}")
+
 
 
 class NextflowCommandBuilder:
@@ -842,6 +864,19 @@ class EnsemblBashOperator(BashOperator):
             # Parse job name
             self.job_name = self.parser.parse_job_name(context, self.job_name)
 
+            # Check Slurm Jobs Already Running with the same name to avoid resubmission and monitor the existing one instead
+            existing_job = self.job_service.get_job_status_by_name(name=self.job_name)
+            if existing_job is not None and existing_job[1] not in ['COMPLETED', 'FAILED', 'CANCELLED', 'TIMEOUT']:
+                self.job_info = JobInfo(
+                    job_id=existing_job[0],
+                    job_name=self.job_name,
+                    bash_command=self.bash_command,
+                    status=existing_job[1]
+                )
+                logging.warning(f"Found existing SLURM jobs with name '{self.job_name}': {existing_job}")
+                logging.warning(f"Monitoring Existing Job ID {existing_job[0]} with status {existing_job[1]} instead of submitting a new job")
+                return
+
             # Build command - skip Nextflow wrapping if use_nextflow is False
             if self.use_nextflow:
                 work_dir = os.path.join(self.slurm_config.cwd, self.job_name)
@@ -886,19 +921,20 @@ class EnsemblBashOperator(BashOperator):
                 task_instance.state = State.SKIPPED
                 return
 
-            # Submit job
-            job_id = self.job_service.submit_job(self.ensembl_cmd, self.job_name)
-            self.job_info = JobInfo(
-                job_id=job_id,
-                job_name=self.job_name,
-                bash_command=self.ensembl_cmd
-            )
+            # Submit a job if not already running
+            if not self.job_info:
+                job_id = self.job_service.submit_job(self.ensembl_cmd, self.job_name)
+                self.job_info = JobInfo(
+                    job_id=job_id,
+                    job_name=self.job_name,
+                    bash_command=self.ensembl_cmd
+                )
 
             # Monitor job
             if self.run_defer:
-                self._defer_monitoring(context, job_id)
+                self._defer_monitoring(context, self.job_info.job_id)
             else:
-                status = self.job_service.wait_for_job(job_id, period=30)
+                status = self.job_service.wait_for_job(self.job_info.job_id, period=30)
                 self.job_info.status = status
 
                 if status != 'COMPLETED':
@@ -913,7 +949,7 @@ class EnsemblBashOperator(BashOperator):
                 self.notification_config.slack_conn_id
             )
 
-    def _defer_monitoring(self, context: Context, job_id: str) -> None:
+    def _defer_monitoring(self, context: Context, job_id: int) -> None:
         """Defer job monitoring."""
         slurm_job_status = self.job_service.get_job_status_from_slurmdb(job_id)
         status = slurm_job_status.status
@@ -931,7 +967,7 @@ class EnsemblBashOperator(BashOperator):
         self,
         context: Context,
         event: Optional[Dict[str, Any]] = None,
-        job_id: str = None,
+        job_id: int = None,
         job_name: str = None,
         bash_command: str = None
     ) -> Any:
