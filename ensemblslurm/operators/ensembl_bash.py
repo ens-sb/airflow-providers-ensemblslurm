@@ -865,7 +865,7 @@ class EnsemblBashOperator(BashOperator):
             self.job_name = self.parser.parse_job_name(context, self.job_name)
 
             # Check Slurm Jobs Already Running with the same name to avoid resubmission and monitor the existing one instead
-            existing_job = self.job_service.get_job_status_by_name(name=self.job_name)
+            existing_job = self.job_service.get_job_status_and_id_by_name(self.job_name)
             if existing_job is not None and existing_job[1] not in ['COMPLETED', 'FAILED', 'CANCELLED', 'TIMEOUT']:
                 self.job_info = JobInfo(
                     job_id=existing_job[0],
