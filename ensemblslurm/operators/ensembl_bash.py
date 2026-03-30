@@ -1042,13 +1042,22 @@ class EnsemblBashOperator(BashOperator):
             if copy_job_status == 'COMPLETED':
                 #Todo: read the log file from the k8s mounted /nfs/public
                 logging.info(f"Logs copied successfully for job {self.job_info.job_name}")
+                logging.info("************************Slurm Logs****************************************")
+                # Open and read the log files from the k8s log directory and push to xcom for notification
+                slurm_log_file = f"/opt/airflow/codon/ens_automation/k8s_logs/{self.job_info.job_name}.{self.job_info.job_id}.out"
+                if os.path.exists(slurm_log_file):
+                    with open(slurm_log_file, 'r') as f:
+                        for line in f:
+                            logging.info(line.strip())
+                else:
+                    logging.warning(f"Log file {slurm_log_file} not found in k8s log directory")
+
             else:
-                logging.error(f"Log copy job failed with status: {copy_job_status}")
+                logging.error(f"Log Files copy job failed with status: {copy_job_status}")
 
             if self.job_info.status != 'COMPLETED':
                 logging.error(msg)
                 raise ValueError(f"{msg}")
-
             logging.info(msg)
         except Exception as e:
             logging.info(msg)
