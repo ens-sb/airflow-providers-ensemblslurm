@@ -872,35 +872,42 @@ class EnsemblBashOperator(BashOperator):
             f"with API version {self.slurm_config.api_version} at {self.slurm_config.url}"
         )
 
+    def _prepare_slurm_job(self, context: Context) -> None:
+        """
+        Prepare the SLURM job runtime configuration.
+        Updates environment, run_defer, and job_name.
+        """
+        # Dynamically update SLURM client environment with user env and env_vars
+        current_env = self.slurm_config.env.copy()
+        if hasattr(self, "env") and self.env:
+            current_env.update(self.env)
+
+        if self.env_vars:
+            if isinstance(self.env_vars, dict):
+                current_env.update(self.env_vars)
+            elif isinstance(self.env_vars, list):
+                for item in self.env_vars:
+                    if "=" in item:
+                        k, v = item.split("=", 1)
+                        current_env[k] = v
+
+        self.job_service.client._parameters["environment"] = current_env
+
+        dag_run = context["dag_run"]
+        dag_run_conf = dag_run.conf or {}
+
+        # Update run_defer from config
+        self.run_defer = dag_run_conf.get("run_defer", self.run_defer)
+
+        # Parse job name
+        self.job_name = self.parser.parse_job_name(context, self.job_name)
+
     def pre_execute(self, context: Context) -> None:
         """Prepare command before execution."""
         try:
             logging.info("Preparing command for execution")
 
-            # Dynamically update SLURM client environment with user env and env_vars
-            current_env = self.slurm_config.env.copy()
-            if hasattr(self, "env") and self.env:
-                current_env.update(self.env)
-
-            if self.env_vars:
-                if isinstance(self.env_vars, dict):
-                    current_env.update(self.env_vars)
-                elif isinstance(self.env_vars, list):
-                    for item in self.env_vars:
-                        if "=" in item:
-                            k, v = item.split("=", 1)
-                            current_env[k] = v
-
-            self.job_service.client._parameters["environment"] = current_env
-
-            dag_run = context["dag_run"]
-            dag_run_conf = dag_run.conf
-
-            # Update run_defer from config
-            self.run_defer = dag_run_conf.get("run_defer", self.run_defer)
-
-            # Parse job name
-            self.job_name = self.parser.parse_job_name(context, self.job_name)
+            self._prepare_slurm_job(context)
 
             # Build command - skip Nextflow wrapping if use_nextflow is False
             if self.use_nextflow:
